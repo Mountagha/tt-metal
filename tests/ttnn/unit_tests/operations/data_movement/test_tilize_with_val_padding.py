@@ -67,6 +67,67 @@ params += [
     )
 ]
 
+params += [
+    pytest.param(
+        [[1, 1, 48, 64]],
+        {
+            "dtype": [ttnn.bfloat16],
+            "layout": [ttnn.ROW_MAJOR_LAYOUT],
+            # IMPORTANT: sharded input in L1 (matches current tilize sharded path expectations)
+            "input_mem_config": [
+                ttnn.MemoryConfig(
+                    ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+                    ttnn.BufferType.L1,
+                    # NOTE: Most sweep harnesses accept a shard spec via "shard_spec"
+                    # If not, you’ll move this test to a unit test instead (see section C).
+                    ttnn.ShardSpec(
+                        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 3))}),
+                        # shard shape is in *elements* for row-major layout:
+                        # (rows_per_core, width)
+                        (16, 64),
+                        ttnn.ShardOrientation.ROW_MAJOR,
+                    ),
+                )
+            ],
+            # Output must match input layout per validate() today for sharded path.
+            "output_mem_config": ttnn.MemoryConfig(ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1),
+            "output_tensor_shape": [1, 1, 64, 64],
+            "pad_value": 10.0,
+        },
+        id="height_sharded_l1_to_height_sharded_l1_pad_height",
+    )
+]
+
+params += [
+    pytest.param(
+        [[1, 1, 48, 64]],
+        {
+            "dtype": [ttnn.bfloat16],
+            "layout": [ttnn.ROW_MAJOR_LAYOUT],
+            "input_mem_config": [
+                ttnn.MemoryConfig(
+                    ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+                    ttnn.BufferType.L1,
+                    ttnn.ShardSpec(
+                        ttnn.CoreRangeSet(
+                            [
+                                ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 1)),
+                                ttnn.CoreRange(ttnn.CoreCoord(2, 0), ttnn.CoreCoord(2, 1)),
+                            ]
+                        ),
+                        (16, 64),
+                        ttnn.ShardOrientation.ROW_MAJOR,
+                    ),
+                )
+            ],
+            "output_mem_config": ttnn.MemoryConfig(ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1),
+            "output_tensor_shape": [1, 1, 64, 64],
+            "pad_value": -3.0,
+        },
+        id="height_sharded_complex_grid_pad_height",
+    )
+]
+
 
 @pytest.mark.parametrize("input_shapes, tilize_with_val_padding_args", params)
 def test_run_tilize_with_val_padding_test(input_shapes, tilize_with_val_padding_args, device, function_level_defaults):

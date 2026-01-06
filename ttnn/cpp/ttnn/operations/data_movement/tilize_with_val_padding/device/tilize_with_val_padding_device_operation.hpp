@@ -11,6 +11,7 @@
 
 #include "ttnn/decorators.hpp"
 #include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_single_core_program_factory.hpp"
+#include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_single_core_sharded_program_factory.hpp"
 #include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_multi_core_block_interleaved_program_factory.hpp"
 #include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_multi_core_interleaved_program_factory.hpp"
 #include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_multi_core_sharded_program_factory.hpp"
@@ -26,6 +27,7 @@ struct TilizeWithValPaddingDeviceOperation {
 
     using program_factory_t = std::variant<
         tilize_with_val_padding::program::TilizeWithValPaddingSingleCoreFactory,
+        tilize_with_val_padding::program::TilizeWithValPaddingSingleCoreShardedFactory,
         tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreBlockInterleavedFactory,
         tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreInterleavedFactory,
         tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreShardedFactory>;

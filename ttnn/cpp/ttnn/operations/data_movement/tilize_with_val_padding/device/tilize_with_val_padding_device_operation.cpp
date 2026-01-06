@@ -20,7 +20,17 @@ TilizeWithValPaddingDeviceOperation::program_factory_t TilizeWithValPaddingDevic
         TT_FATAL(
             !operation_attributes.sub_core_grids.has_value(),
             "Sharded tilize does not support sub core grid specification");
-        return tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreShardedFactory{};
+
+        // Route based on shard type following maintainer guidance:
+        // - WIDTH_SHARDED: use existing multi-core sharded path
+        // - HEIGHT_SHARDED/BLOCK_SHARDED: use single-core with ShardedAddrGen
+        auto memory_layout = input_tensor.memory_config().memory_layout();
+        if (memory_layout == TensorMemoryLayout::WIDTH_SHARDED) {
+            return tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreShardedFactory{};
+        } else {
+            // HEIGHT_SHARDED or BLOCK_SHARDED: use ShardedAddrGen approach
+            return tilize_with_val_padding::program::TilizeWithValPaddingSingleCoreShardedFactory{};
+        }
     }
     if (!operation_attributes.enough_space_height) {
         return tilize_with_val_padding::program::TilizeWithValPaddingMultiCoreBlockInterleavedFactory{};
@@ -84,9 +94,10 @@ void TilizeWithValPaddingDeviceOperation::validate_on_program_cache_miss(
         TILE_WIDTH,
         TILE_HEIGHT);
 
+    auto layout = input_tensor.memory_config().memory_layout();
     if (input_tensor.memory_config().is_sharded()) {
         TT_FATAL(
-            input_tensor.memory_config().memory_layout() == TensorMemoryLayout::WIDTH_SHARDED,
+            layout == TensorMemoryLayout::WIDTH_SHARDED || layout == TensorMemoryLayout::HEIGHT_SHARDED,
             "Input tensor must be width sharded");
         TT_FATAL(
             operation_attributes.output_mem_config.memory_layout() == input_tensor.memory_config().memory_layout(),
@@ -108,30 +119,64 @@ void TilizeWithValPaddingDeviceOperation::validate_on_program_cache_miss(
 TilizeWithValPaddingDeviceOperation::spec_return_value_t TilizeWithValPaddingDeviceOperation::compute_output_specs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& input_tensor = tensor_args.input_tensor;
-    auto input_shape = input_tensor.padded_shape();
+
+    // Output logical shape should match the requested output shape (with padding)
+    auto output_logical_shape = operation_attributes.output_padded_shape;
 
     if (input_tensor.memory_config().is_sharded()) {
         auto shard_spec = input_tensor.shard_spec().value();
-        shard_spec.shape[0] =
-            operation_attributes.output_padded_shape.volume() / operation_attributes.output_padded_shape[-1];
+        // For tiled output, shard dimensions must be multiples of tile size (32x32)
+        auto output_height = operation_attributes.output_padded_shape[-2];
+        auto output_width = operation_attributes.output_padded_shape[-1];
+
+        // Calculate number of cores from input shard grid
+        uint32_t num_cores = 0;
+        const auto& core_ranges = shard_spec.grid.ranges();
+        for (const auto& range : core_ranges) {
+            uint32_t cores_in_range =
+                (range.end_coord.x - range.start_coord.x + 1) * (range.end_coord.y - range.start_coord.y + 1);
+            num_cores += cores_in_range;
+        }
+
+        // For TILE layout output, each shard must contain complete tiles (32x32)
+        // Update shard shape for output
+        if (operation_attributes.output_mem_config.memory_layout() == TensorMemoryLayout::HEIGHT_SHARDED) {
+            // Each core gets output_height/num_cores rows, rounded to tile boundaries
+            uint32_t rows_per_core = (output_height + num_cores - 1) / num_cores;  // Round up
+            rows_per_core = ((rows_per_core + 31) / 32) * 32;                      // Round to tile size (32)
+            shard_spec.shape[0] = rows_per_core;
+            shard_spec.shape[1] = output_width;
+        } else if (operation_attributes.output_mem_config.memory_layout() == TensorMemoryLayout::WIDTH_SHARDED) {
+            uint32_t cols_per_core = (output_width + num_cores - 1) / num_cores;  // Round up
+            cols_per_core = ((cols_per_core + 31) / 32) * 32;                     // Round to tile size (32)
+            shard_spec.shape[0] = output_height;
+            shard_spec.shape[1] = cols_per_core;
+        } else {  // BLOCK_SHARDED
+            uint32_t cores_per_dim = std::sqrt(num_cores);
+            uint32_t rows_per_core = ((output_height + cores_per_dim - 1) / cores_per_dim + 31) / 32 * 32;
+            uint32_t cols_per_core = ((output_width + cores_per_dim - 1) / cores_per_dim + 31) / 32 * 32;
+            shard_spec.shape[0] = rows_per_core;
+            shard_spec.shape[1] = cols_per_core;
+        }
+
         auto mem_config = operation_attributes.output_mem_config.with_shard_spec(shard_spec);
         return TensorSpec(
-            input_shape,
+            output_logical_shape,
             TensorLayout::fromPaddedShape(
                 operation_attributes.output_dtype,
                 PageConfig(Layout::TILE),
                 mem_config,
-                input_shape,
+                output_logical_shape,
                 operation_attributes.output_padded_shape));
     }
 
     return TensorSpec(
-        input_shape,
+        output_logical_shape,
         TensorLayout::fromPaddedShape(
             operation_attributes.output_dtype,
             PageConfig(Layout::TILE),
             operation_attributes.output_mem_config,
-            input_shape,
+            output_logical_shape,
             operation_attributes.output_padded_shape));
 }
 

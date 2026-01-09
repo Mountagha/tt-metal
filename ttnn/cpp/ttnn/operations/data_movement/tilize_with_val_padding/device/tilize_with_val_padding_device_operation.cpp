@@ -111,33 +111,30 @@ void TilizeWithValPaddingDeviceOperation::validate_on_program_cache_miss(
         auto layout = input_tensor.memory_config().memory_layout();
         TT_FATAL(
             layout == TensorMemoryLayout::WIDTH_SHARDED || layout == TensorMemoryLayout::HEIGHT_SHARDED,
-            "Input tensor must be width sharded");
+            "Input tensor must be width sharded or height sharded");
         TT_FATAL(
             operation_attributes.output_mem_config.memory_layout() == input_tensor.memory_config().memory_layout(),
             "Output tensor must have the same memory layout as input tensor");
 
-        // Only height height dimension can change for HEIGHT_SHARDED
         for (uint32_t i = 0; i < input_tensor.padded_shape().rank(); i++) {
-            if (layout == TensorMemoryLayout::HEIGHT_SHARDED && i == input_shape.rank() - 2) {
-                continue;
+            if (layout == TensorMemoryLayout::HEIGHT_SHARDED) {
+                if (i < input_shape.rank() - 2) {
+                    TT_FATAL(
+                        input_shape[i] == operation_attributes.output_padded_shape[i],
+                        "Input shape[{}] ({}) must equal output padded shape[{}] ({})",
+                        i,
+                        input_shape[i],
+                        i,
+                        operation_attributes.output_padded_shape[i]);
+                }
+            } else if (layout == TensorMemoryLayout::WIDTH_SHARDED) {
+                if (i != input_shape.rank() - 2) {
+                    TT_FATAL(
+                        input_shape[i] == operation_attributes.output_padded_shape[i],
+                        "For WIDTH_SHARDED, only height can be padded");
+                }
             }
-            if (layout == TensorMemoryLayout::WIDTH_SHARDED && i != input_shape.rank() - 2) {
-                TT_FATAL(
-                    input_shape[i] == operation_attributes.output_padded_shape[i],
-                    "For WIDTH_SHARDED, only height can be padded"
-
-                );
-            }
-            // Get rid of this ? below ?
-            TT_FATAL(
-                input_shape[i] == operation_attributes.output_padded_shape[i],
-                "Input shape[{}] ({}) must equal output padded shape[{}] ({})",
-                i,
-                input_shape[i],
-                i,
-                operation_attributes.output_padded_shape[i]);
         }
-    }
     }
 }
 

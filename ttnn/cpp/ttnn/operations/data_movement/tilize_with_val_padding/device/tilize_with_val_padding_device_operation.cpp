@@ -149,15 +149,15 @@ TensorSpec TilizeWithValPaddingDeviceOperation::compute_output_specs(
     const auto& input_shape = input_tensor.padded_shape();
 
     if (input_tensor.memory_config().is_sharded()) {
-        // For sharded output, preserve input logical shape, only pad to output_padded_shape
-        // This maintains tilize_with_val_padding semantics: logical stays same, padded changes
+        // For sharded output, output logical shape equals output padded shape
+        // tilize_with_val_padding pads the tensor, so logical shape changes to match padded
         return TensorSpec(
-            input_shape,
+            operation_attributes.output_padded_shape,
             TensorLayout::fromPaddedShape(
                 operation_attributes.output_dtype,
                 PageConfig(Layout::TILE),
                 operation_attributes.output_mem_config,
-                input_shape,
+                operation_attributes.output_padded_shape,
                 operation_attributes.output_padded_shape));
     }
 

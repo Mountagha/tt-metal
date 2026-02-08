@@ -1,0 +1,206 @@
+// SPDX-FileCopyrightText: © 2025 Tenstorrent AI ULC.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include "tilize_with_val_padding_multi_core_height_sharded_factory.hpp"
+
+#include <cmath>
+#include <map>
+
+#include "ttnn/operations/cb_utils.hpp"
+#include <tt-metalium/constants.hpp>
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/allocator.hpp>
+#include <tt-metalium/work_split.hpp>
+#include <tt-metalium/tensor_accessor_args.hpp>
+#include "ttnn/operations/ccl/sharding_addrgen_helper.hpp"
+#include "ttnn/operations/data_movement/tilize_with_val_padding/device/factories/tilize_with_val_padding_factory_helper.hpp"
+
+using namespace tt::constants;
+using namespace tt::tt_metal;
+
+namespace ttnn::prim {
+namespace {
+
+std::vector<uint32_t> build_rotated_shard_map(
+    const std::vector<tt::tt_metal::CoreCoord>& shard_cores, const tt::tt_metal::CoreCoord& core) {
+    TT_ASSERT(!shard_cores.empty(), "Shard core list is empty");
+
+    size_t start_index = 0;
+    for (size_t i = 0; i < shard_cores.size(); ++i) {
+        if (shard_cores[i] == core) {
+            start_index = i;
+            break;
+        }
+    }
+
+    std::vector<uint32_t> args;
+    args.reserve((shard_cores.size() + 1) / 2);
+
+    bool last = false;
+    uint32_t held_value = 0;
+    for (size_t i = 0; i < shard_cores.size(); ++i) {
+        const auto& coord = shard_cores[(start_index + i) % shard_cores.size()];
+        const uint32_t concatenated_core = (coord.x & 0xFF) << 8 | (coord.y & 0xFF);
+        if (last) {
+            args.push_back(concatenated_core | (held_value << 16));
+        } else {
+            held_value = concatenated_core;
+        }
+        last = !last;
+    }
+    if (last) {
+        args.push_back(held_value << 16);
+    }
+
+    return args;
+}
+
+}  // namespace
+
+TilizeWithValPaddingMultiCoreHeightShardedFactory::cached_program_t
+TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
+    const operation_attributes_t& operation_attributes, const Tensor& input_tensor, const Tensor& output_tensor) {
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+
+    const Tensor& input = input_tensor;
+    const Tensor& output = output_tensor;
+    auto pad_value = operation_attributes.pad_value;
+
+    tt::DataFormat input_cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(input.dtype());
+    uint32_t input_single_tile_size = tt::tile_size(input_cb_data_format);
+    tt::DataFormat output_cb_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
+    uint32_t output_single_tile_size = tt::tile_size(output_cb_data_format);
+
+    bool fp32_llk_acc = input.dtype() == DataType::FLOAT32;
+
+    auto input_shard_spec = input.shard_spec().value();
+    auto output_shard_spec = output.shard_spec().value();
+
+    auto all_cores = output_shard_spec.grid;
+
+    auto output_shape = output.padded_shape();
+    uint32_t output_height = output_shape[-2];
+    uint32_t output_width = output_shape[-1];
+    uint32_t num_batches = output.physical_volume() / (output_height * output_width);
+
+    const uint32_t input_shard_height = input_shard_spec.shape[0];
+    const uint32_t input_shard_width = input_shard_spec.shape[1];
+    const uint32_t output_shard_height = output_shard_spec.shape[0];
+    const uint32_t output_shard_width = output_shard_spec.shape[1];
+
+    const uint32_t tiles_per_row = output_shard_width / TILE_WIDTH;
+    const uint32_t tile_rows = output_shard_height / TILE_HEIGHT;
+    const uint32_t total_tiles_per_core = tiles_per_row * tile_rows * num_batches;
+
+    auto [src0_cb_index, cb_src0] = create_cb(
+        tt::CBIndex::c_0, program, all_cores, input_single_tile_size, tiles_per_row * 2, input_cb_data_format);
+
+    auto [output_cb_index, cb_output] = create_cb(
+        tt::CBIndex::c_16, program, all_cores, output_single_tile_size, tiles_per_row * 2, output_cb_data_format);
+
+    std::vector<uint32_t> reader_ct_args = {
+        static_cast<uint32_t>(src0_cb_index),
+        static_cast<uint32_t>(input.element_size()),
+        static_cast<uint32_t>(TILE_HEIGHT),
+        static_cast<uint32_t>(TILE_WIDTH)};
+
+    shard_builder::extend_sharding_compile_time_args(input, reader_ct_args);
+
+    std::map<std::string, std::string> reader_defines;
+    reader_defines["SHARDED"] = "1";
+
+    KernelHandle reader_kernel_id = CreateKernel(
+        program,
+        "ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/"
+        "reader_unary_pad_height_sharded.cpp",
+        all_cores,
+        ReaderDataMovementConfig(reader_ct_args, reader_defines));
+
+    std::vector<uint32_t> writer_ct_args = {output_cb_index};
+    shard_builder::extend_sharding_compile_time_args(output, writer_ct_args);
+
+    std::map<std::string, std::string> writer_defines;
+    writer_defines["SHARDED"] = "1";
+
+    KernelHandle writer_kernel_id = CreateKernel(
+        program,
+        "ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/"
+        "writer_tilize_sharded.cpp",
+        all_cores,
+        WriterDataMovementConfig(writer_ct_args, writer_defines));
+
+    const uint32_t num_tiles_per_block = tiles_per_row;
+    const uint32_t num_blocks = total_tiles_per_core / num_tiles_per_block;
+
+    std::vector<uint32_t> compute_args = {
+        num_blocks,          // per_core_block_cnt
+        num_tiles_per_block  // per_core_block_tile_cnt
+    };
+
+    CreateKernel(
+        program,
+        "ttnn/cpp/ttnn/kernel/compute/tilize.cpp",
+        all_cores,
+        ComputeConfig{.fp32_dest_acc_en = fp32_llk_acc, .compile_args = compute_args});
+
+    uint32_t packed_pad_value = detail::get_packed_value(input, pad_value);
+    auto* src_buffer = input.buffer();
+    auto* dst_buffer = output.buffer();
+
+    const std::vector<CoreCoord> shard_cores = shard_builder::get_shard_cores(output);
+
+    for (const auto& core : shard_cores) {
+        std::vector<uint32_t> reader_rt_args = {
+            src_buffer->address(),  // Base address for ShardedAddrGen
+            input_shard_width,      // logical_width
+            output_shard_width,     // padded_width
+            input_shard_height,     // logical_height
+            output_shard_height,    // padded_height
+            tiles_per_row,
+            tile_rows,
+            num_batches,
+            packed_pad_value};
+
+        const auto shard_map = build_rotated_shard_map(shard_cores, core);
+        std::copy(shard_map.begin(), shard_map.end(), std::back_inserter(reader_rt_args));
+        SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
+
+        std::vector<uint32_t> writer_rt_args = {
+            dst_buffer->address(),  // Base address for ShardedAddrGen
+            total_tiles_per_core};
+
+        std::copy(shard_map.begin(), shard_map.end(), std::back_inserter(writer_rt_args));
+        SetRuntimeArgs(program, writer_kernel_id, core, writer_rt_args);
+    }
+
+    return cached_program_t(
+        std::move(program),
+        shared_variables_t{
+            .reader_kernel_id = reader_kernel_id,
+            .writer_kernel_id = writer_kernel_id,
+            .cb_src0 = cb_src0,
+            .cb_output = cb_output,
+            .cores = shard_cores});
+}
+
+void TilizeWithValPaddingMultiCoreHeightShardedFactory::override_runtime_arguments(
+    cached_program_t& cached_program,
+    const operation_attributes_t& /*operation_attributes*/,
+    const Tensor& input_tensor,
+    const Tensor& output_tensor) {
+    auto& program = cached_program.program;
+    auto& shared_variables = cached_program.shared_variables;
+
+    auto* src_buffer = input_tensor.buffer();
+    auto* dst_buffer = output_tensor.buffer();
+
+    for (const auto& core : shared_variables.cores) {
+        auto& reader_rt_args = GetRuntimeArgs(program, shared_variables.reader_kernel_id, core);
+        reader_rt_args[0] = src_buffer->address();
+
+        auto& writer_rt_args = GetRuntimeArgs(program, shared_variables.writer_kernel_id, core);
+        writer_rt_args[0] = dst_buffer->address();
+    }
+}
+}  // namespace ttnn::prim

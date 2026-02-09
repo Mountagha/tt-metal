@@ -78,6 +78,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     auto output_shard_spec = output.shard_spec().value();
 
     auto all_cores = output_shard_spec.grid;
+    const uint32_t shard_count = shard_cores.size();
 
     auto output_shape = output.padded_shape();
     uint32_t output_height = output_shape[-2];
@@ -92,6 +93,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     const uint32_t tiles_per_row = output_shard_width / TILE_WIDTH;
     const uint32_t tile_rows = output_shard_height / TILE_HEIGHT;
     const uint32_t total_tiles_per_core = tiles_per_row * tile_rows * num_batches;
+    const uint32_t global_logical_height = input.padded_shape()[-2];  // Need for batch row stride.
 
     auto [src0_cb_index, cb_src0] = create_cb(
         tt::CBIndex::c_0, program, all_cores, input_single_tile_size, tiles_per_row * 2, input_cb_data_format);
@@ -113,7 +115,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     KernelHandle reader_kernel_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/"
-        "reader_unary_pad_height_sharded.cpp",
+        "new_reader_kernel.cpp",
         all_cores,
         ReaderDataMovementConfig(reader_ct_args, reader_defines));
 
@@ -150,27 +152,45 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
 
     const std::vector<CoreCoord> shard_cores = shard_builder::get_shard_cores(output);
 
-    for (const auto& core : shard_cores) {
+    // Per-core RT args.
+    for (uint32_t i = 0; i < shard_count; ++i) {
+        const auto& core = shard_cores[i];
+
+        // Shard start row per batch
+        const uint32_t shard_start_row = i * output_shard_height;
+
+        // For block Sharding support: Column offset in bytes. For pure HEIGHT, 0.
+        const uint32_t start_col_bytes = 0;
+
+        // for now assume they all the same.
+        const uint32_t logical_height_core = input_shard_spec.shape[0];
+        const uint32_t padded_height_core = output_shard_spec.shape[0];
+
         std::vector<uint32_t> reader_rt_args = {
             src_buffer->address(),  // Base address for ShardedAddrGen
             input_shard_width,      // logical_width
             output_shard_width,     // padded_width
             input_shard_height,     // logical_height
             output_shard_height,    // padded_height
+            global_logical_height,
+            shard_start_row,
+            start_col_bytes,  // For block support.
             tiles_per_row,
             tile_rows,
             num_batches,
             packed_pad_value};
 
-        const auto shard_map = build_rotated_shard_map(shard_cores, core);
-        std::copy(shard_map.begin(), shard_map.end(), std::back_inserter(reader_rt_args));
-        SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
+        shard_builder::extend_sharding_run_time_args(input, read_rt_args)
+            SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
 
+        // Tile offset per core.
+        const uint32_t shard_start_tile = i * total_tiles_per_core;
         std::vector<uint32_t> writer_rt_args = {
             dst_buffer->address(),  // Base address for ShardedAddrGen
-            total_tiles_per_core};
+            total_tiles_per_core,
+            shard_start_tile};
 
-        std::copy(shard_map.begin(), shard_map.end(), std::back_inserter(writer_rt_args));
+        shard_builder::extend_sharding_run_time_args(output, writer_rt_args);
         SetRuntimeArgs(program, writer_kernel_id, core, writer_rt_args);
     }
 

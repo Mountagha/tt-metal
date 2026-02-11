@@ -17,8 +17,8 @@ FORCE_INLINE void fill_with_val(uint32_t start_addr, uint32_t n_bytes, uint32_t 
 
     // 4B writes
     auto* start_ptr_4B = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(start_addr_4B);
-    auto* end_ptr_4B =
-        reinterpret_cast<volatile tt_l1_ptr uint32_t*> for (auto* p = start_ptr_4B; p < end_addr_4B; ++p) {
+    auto* end_ptr_4B = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(end_addr_4B);
+    for (auto* p = start_ptr_4B; p < end_addr_4B; ++p) {
         *p = val;
     }
 
@@ -55,6 +55,7 @@ void kernel_main() {
     const uint32_t global_logical_height = get_arg_val<uint32_t>(rt++); // full tensor logical height (rows) for batch stride
     const uint32_t shard_start_row = get_arg_val<uint32_t>(rt++);   // This core's start row (within a batch)
     const uint32_t start_col_bytes = get_arg_val<uint32_t>(rt++);   // for later block support.
+    const uint32_t tiles_per_row = get_arg_val<uint32_t>(rt++);
     const uint32_t tile_rows_core = get_arg_val<uint32_t>(rt++);
     const uint32_t num_batches  = get_arg_val<uint32_t>(rt++);
     const uint32_t packed_pad_value = get_arg_val<uint32_t>(rt++);
@@ -69,7 +70,7 @@ void kernel_main() {
         get_compile_time_arg_val(9),
         get_compile_time_arg_val(10)>;
 
-    const auto [mapping_table, rt_increment] = 
+    const auto [mapping_table, rt_increment] =
         experimental::shard_addr_gen_utils::get_shard_map<tensor_shard_info>(get_arg_addr(rt));
     experimental::ShardedAddrGen<tensor_shard_info> s0 = {.bank_base_address = src_base_addr, .shard_array = mapping_table};
 #endif

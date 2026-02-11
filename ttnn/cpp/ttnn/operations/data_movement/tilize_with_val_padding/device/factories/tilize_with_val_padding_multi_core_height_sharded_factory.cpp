@@ -78,7 +78,6 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     auto output_shard_spec = output.shard_spec().value();
 
     auto all_cores = output_shard_spec.grid;
-    const uint32_t shard_count = shard_cores.size();
 
     auto output_shape = output.padded_shape();
     uint32_t output_height = output_shape[-2];
@@ -115,7 +114,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     KernelHandle reader_kernel_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/"
-        "new_reader_kernel.cpp",
+        "reader_unary_pad_height_sharded_multicore.cpp",
         all_cores,
         ReaderDataMovementConfig(reader_ct_args, reader_defines));
 
@@ -128,7 +127,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     KernelHandle writer_kernel_id = CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/data_movement/tilize_with_val_padding/device/kernels/dataflow/"
-        "writer_tilize_sharded.cpp",
+        "writer_tilize_sharded_multicore.cpp",
         all_cores,
         WriterDataMovementConfig(writer_ct_args, writer_defines));
 
@@ -151,6 +150,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
     auto* dst_buffer = output.buffer();
 
     const std::vector<CoreCoord> shard_cores = shard_builder::get_shard_cores(output);
+    const uint32_t shard_count = shard_cores.size();
 
     // Per-core RT args.
     for (uint32_t i = 0; i < shard_count; ++i) {
@@ -160,7 +160,7 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
         const uint32_t shard_start_row = i * output_shard_height;
 
         // For block Sharding support: Column offset in bytes. For pure HEIGHT, 0.
-        const uint32_t start_col_bytes = 0;
+        const uint32_t start_col_bytes = 0;  // !TODO: later support.
 
         // for now assume they all the same.
         const uint32_t logical_height_core = input_shard_spec.shape[0];
@@ -180,8 +180,8 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
             num_batches,
             packed_pad_value};
 
-        shard_builder::extend_sharding_run_time_args(input, read_rt_args)
-            SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
+        shard_builder::extend_sharding_run_time_args(input, reader_rt_args);
+        SetRuntimeArgs(program, reader_kernel_id, core, reader_rt_args);
 
         // Tile offset per core.
         const uint32_t shard_start_tile = i * total_tiles_per_core;

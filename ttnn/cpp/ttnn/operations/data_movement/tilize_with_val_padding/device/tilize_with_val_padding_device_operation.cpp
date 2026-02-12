@@ -20,6 +20,10 @@ TilizeWithValPaddingDeviceOperation::program_factory_t TilizeWithValPaddingDevic
         TT_FATAL(
             !operation_attributes.sub_core_grids.has_value(),
             "Sharded tilize does not support sub core grid specification");
+        auto layout = input_tensor.memory_config().memory_layout();
+        if (layout == TensorMemoryLayout::HEIGHT_SHARDED || layout == TensorMemoryLayout::BLOCK_SHARDED) {
+            return TilizeWithValPaddingMultiCoreHeightShardedFactory{};
+        }
         return TilizeWithValPaddingMultiCoreShardedFactory{};
     }
     if (!operation_attributes.enough_space_height) {
@@ -107,21 +111,25 @@ void TilizeWithValPaddingDeviceOperation::validate_on_program_cache_miss(
         TILE_HEIGHT);
 
     if (input_tensor.memory_config().is_sharded()) {
+        auto layout = input_tensor.memory_config().memory_layout();
         TT_FATAL(
-            input_tensor.memory_config().memory_layout() == TensorMemoryLayout::WIDTH_SHARDED,
-            "Input tensor must be width sharded");
+            layout == TensorMemoryLayout::WIDTH_SHARDED || layout == TensorMemoryLayout::HEIGHT_SHARDED ||
+                layout == TensorMemoryLayout::BLOCK_SHARDED,
+            "Input tensor must be properly sharded (WIDTH/HEIGHT/BLOCK_SHARDED)");
         TT_FATAL(
             operation_attributes.output_mem_config.memory_layout() == input_tensor.memory_config().memory_layout(),
             "Output tensor must have the same memory layout as input tensor");
-        for (uint32_t i = 0; i < input_tensor.padded_shape().rank(); i++) {
-            if (i != input_shape.rank() - 2) {
-                TT_FATAL(
-                    input_shape[i] == operation_attributes.output_padded_shape[i],
-                    "Input shape[{}] ({}) must equal output padded shape[{}] ({})",
-                    i,
-                    input_shape[i],
-                    i,
-                    operation_attributes.output_padded_shape[i]);
+        if (layout == TensorMemoryLayout::WIDTH_SHARDED) {
+            for (uint32_t i = 0; i < input_tensor.padded_shape().rank(); i++) {
+                if (i != input_shape.rank() - 2) {
+                    TT_FATAL(
+                        input_shape[i] == operation_attributes.output_padded_shape[i],
+                        "Input shape[{}] ({}) must equal output padded shape[{}] ({})",
+                        i,
+                        input_shape[i],
+                        i,
+                        operation_attributes.output_padded_shape[i]);
+                }
             }
         }
     }

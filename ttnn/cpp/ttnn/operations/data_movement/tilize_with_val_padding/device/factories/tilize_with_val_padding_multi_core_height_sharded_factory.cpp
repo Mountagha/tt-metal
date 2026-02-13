@@ -20,43 +20,6 @@ using namespace tt::constants;
 using namespace tt::tt_metal;
 
 namespace ttnn::prim {
-namespace {
-
-std::vector<uint32_t> build_rotated_shard_map(
-    const std::vector<tt::tt_metal::CoreCoord>& shard_cores, const tt::tt_metal::CoreCoord& core) {
-    TT_ASSERT(!shard_cores.empty(), "Shard core list is empty");
-
-    size_t start_index = 0;
-    for (size_t i = 0; i < shard_cores.size(); ++i) {
-        if (shard_cores[i] == core) {
-            start_index = i;
-            break;
-        }
-    }
-
-    std::vector<uint32_t> args;
-    args.reserve((shard_cores.size() + 1) / 2);
-
-    bool last = false;
-    uint32_t held_value = 0;
-    for (size_t i = 0; i < shard_cores.size(); ++i) {
-        const auto& coord = shard_cores[(start_index + i) % shard_cores.size()];
-        const uint32_t concatenated_core = (coord.x & 0xFF) << 8 | (coord.y & 0xFF);
-        if (last) {
-            args.push_back(concatenated_core | (held_value << 16));
-        } else {
-            held_value = concatenated_core;
-        }
-        last = !last;
-    }
-    if (last) {
-        args.push_back(held_value << 16);
-    }
-
-    return args;
-}
-
-}  // namespace
 
 TilizeWithValPaddingMultiCoreHeightShardedFactory::cached_program_t
 TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
@@ -163,8 +126,8 @@ TilizeWithValPaddingMultiCoreHeightShardedFactory::create(
         const uint32_t start_col_bytes = 0;  // !TODO: later support.
 
         // for now assume they all the same.
-        const uint32_t logical_height_core = input_shard_spec.shape[0];
-        const uint32_t padded_height_core = output_shard_spec.shape[0];
+        // const uint32_t logical_height_core = input_shard_spec.shape[0];
+        // const uint32_t padded_height_core = output_shard_spec.shape[0];
 
         std::vector<uint32_t> reader_rt_args = {
             src_buffer->address(),  // Base address for ShardedAddrGen

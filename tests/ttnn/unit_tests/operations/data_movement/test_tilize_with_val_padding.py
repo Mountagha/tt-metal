@@ -67,6 +67,97 @@ params += [
     )
 ]
 
+# HEIGHT_SHARDED multicore tests
+params += [
+    pytest.param(
+        [[1, 1, 96, 64]],
+        {
+            "dtype": [ttnn.bfloat16],
+            "layout": [ttnn.ROW_MAJOR_LAYOUT],
+            "input_mem_config": [
+                ttnn.create_sharded_memory_config(
+                    shape=(96, 64),
+                    core_grid=ttnn.CoreGrid(y=4, x=1),
+                    strategy=ttnn.ShardStrategy.HEIGHT,
+                    orientation=ttnn.ShardOrientation.ROW_MAJOR,
+                    use_height_and_width_as_shard_shape=False,
+                )
+            ],
+            "output_mem_config": ttnn.create_sharded_memory_config(
+                shape=(128, 64),
+                core_grid=ttnn.CoreGrid(y=4, x=1),
+                strategy=ttnn.ShardStrategy.HEIGHT,
+                orientation=ttnn.ShardOrientation.ROW_MAJOR,
+                use_height_and_width_as_shard_shape=False,
+            ),
+            "output_tensor_shape": [1, 1, 128, 64],
+            "pad_value": 3.25,
+            "use_multicore": True,
+        },
+        id="height_sharded_multicore_pad_height_4cores",
+    )
+]
+
+params += [
+    pytest.param(
+        [[2, 1, 64, 30]],
+        {
+            "dtype": [ttnn.bfloat16],
+            "layout": [ttnn.ROW_MAJOR_LAYOUT],
+            "input_mem_config": [
+                ttnn.create_sharded_memory_config(
+                    shape=(64, 30),
+                    core_grid=ttnn.CoreGrid(y=2, x=1),
+                    strategy=ttnn.ShardStrategy.HEIGHT,
+                    orientation=ttnn.ShardOrientation.ROW_MAJOR,
+                    use_height_and_width_as_shard_shape=False,
+                )
+            ],
+            "output_mem_config": ttnn.create_sharded_memory_config(
+                shape=(64, 32),
+                core_grid=ttnn.CoreGrid(y=2, x=1),
+                strategy=ttnn.ShardStrategy.HEIGHT,
+                orientation=ttnn.ShardOrientation.ROW_MAJOR,
+                use_height_and_width_as_shard_shape=False,
+            ),
+            "output_tensor_shape": [2, 1, 64, 32],
+            "pad_value": -1.0,
+            "use_multicore": True,
+        },
+        id="height_sharded_multicore_multi_batch",
+    )
+]
+
+params += [
+    pytest.param(
+        [[1, 1, 96, 30]],
+        {
+            "dtype": [ttnn.bfloat16],
+            "layout": [ttnn.ROW_MAJOR_LAYOUT],
+            "input_mem_config": [
+                ttnn.create_sharded_memory_config(
+                    shape=(96, 30),
+                    core_grid=ttnn.CoreGrid(y=3, x=1),
+                    strategy=ttnn.ShardStrategy.HEIGHT,
+                    orientation=ttnn.ShardOrientation.COL_MAJOR,
+                    use_height_and_width_as_shard_shape=False,
+                )
+            ],
+            "output_mem_config": ttnn.create_sharded_memory_config(
+                shape=(96, 32),
+                core_grid=ttnn.CoreGrid(y=3, x=1),
+                strategy=ttnn.ShardStrategy.HEIGHT,
+                orientation=ttnn.ShardOrientation.COL_MAJOR,
+                use_height_and_width_as_shard_shape=False,
+            ),
+            "output_tensor_shape": [1, 1, 96, 32],
+            "pad_value": 8.0,
+            "use_multicore": True,
+        },
+        id="height_sharded_multicore_col_major_3cores",
+    )
+]
+
 
 @pytest.mark.parametrize("input_shapes, tilize_with_val_padding_args", params)
 def test_run_tilize_with_val_padding_test(input_shapes, tilize_with_val_padding_args, device, function_level_defaults):

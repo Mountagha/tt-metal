@@ -140,17 +140,33 @@ TensorSpec TilizeWithValPaddingDeviceOperation::compute_output_specs(
     const auto& input_shape = input_tensor.padded_shape();
 
     if (input_tensor.memory_config().is_sharded()) {
-        auto shard_spec = input_tensor.shard_spec().value();
-        shard_spec.shape[0] =
-            operation_attributes.output_padded_shape.volume() / operation_attributes.output_padded_shape[-1];
-        auto mem_config = operation_attributes.output_mem_config.with_shard_spec(shard_spec);
+        auto mem_config = operation_attributes.output_mem_config;
+        auto layout = mem_config.memory_layout();
+
+        if (mem_config.shard_spec().has_value()) {
+            auto shard_spec = mem_config.shard_spec().value();
+            const uint32_t output_height =
+                operation_attributes.output_padded_shape.volume() / operation_attributes.output_padded_shape[-1];
+            const uint32_t output_width = operation_attributes.output_padded_shape[-1];
+
+            if (layout == TensorMemoryLayout::WIDTH_SHARDED) {
+                shard_spec.shape[0] = output_height;
+            } else if (layout == TensorMemoryLayout::HEIGHT_SHARDED) {
+                shard_spec.shape[0] = output_height / shard_spec.grid.num_cores();
+                shard_spec.shape[1] = output_width;
+            }
+
+            mem_config = mem_config.with_shard_spec(shard_spec);
+        }
+
+        // For sharded output, logical shape equals padded shape after tilize_with_val_padding.
         return TensorSpec(
-            input_shape,
+            operation_attributes.output_padded_shape,
             TensorLayout::fromPaddedShape(
                 operation_attributes.output_dtype,
                 PageConfig(Layout::TILE),
                 mem_config,
-                input_shape,
+                operation_attributes.output_padded_shape,
                 operation_attributes.output_padded_shape));
     }
 

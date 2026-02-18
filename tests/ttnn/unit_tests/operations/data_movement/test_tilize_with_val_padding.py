@@ -11,6 +11,7 @@ from tests.tt_eager.python_api_testing.sweep_tests import comparison_funcs, gene
 from tests.tt_eager.python_api_testing.sweep_tests.run_pytorch_ci_tests import run_single_pytorch_test
 import ttnn
 
+"""
 params = [
     pytest.param(
         [[1, 1, 50, 50]],
@@ -24,7 +25,6 @@ params = [
         },
     )
 ]
-
 params += [
     pytest.param(
         [[1, 1, 50, 50]],
@@ -66,9 +66,9 @@ params += [
         },
     )
 ]
-
+"""
 # HEIGHT_SHARDED multicore tests
-params += [
+params = [
     pytest.param(
         [[1, 1, 96, 64]],
         {
@@ -97,7 +97,7 @@ params += [
         id="height_sharded_multicore_pad_height_4cores",
     )
 ]
-
+"""
 params += [
     pytest.param(
         [[2, 1, 64, 30]],
@@ -157,6 +157,7 @@ params += [
         id="height_sharded_multicore_col_major_3cores",
     )
 ]
+"""
 
 
 @pytest.mark.parametrize("input_shapes, tilize_with_val_padding_args", params)

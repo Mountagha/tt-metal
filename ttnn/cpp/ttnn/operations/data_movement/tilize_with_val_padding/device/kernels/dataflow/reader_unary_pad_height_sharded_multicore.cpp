@@ -18,7 +18,7 @@ FORCE_INLINE void fill_with_val(uint32_t start_addr, uint32_t n_bytes, uint32_t 
     // 4B writes
     auto* start_ptr_4B = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(start_addr_4B);
     auto* end_ptr_4B = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(end_addr_4B);
-    for (auto* p = start_ptr_4B; p < end_addr_4B; ++p) {
+    for (auto* p = start_ptr_4B; p < end_ptr_4B; ++p) {
         *p = val;
     }
 
